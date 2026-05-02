@@ -3828,63 +3828,67 @@
                 });
             },
 
-            // 云端导入：从 GitHub 仓库的 wordlist 目录获取题库列表并导入
+            // 云端导入：从 GitHub 仓库的 words 目录获取题库列表并导入
             cloudImportFromGitHub: async function() {
                 const repoOwner = 'yyyaaa-maker';
                 const repoName = 'shuatibao';
-                const branchPath = 'main/words';  // 对应 https://github.com/yyyaaa-maker/shuatibao/tree/main/words
+                const dirPath = 'words';           // 目标文件夹
+                const branch = 'main';             // 目标分支
 
-                // 1. 调用 GitHub API 获取该目录下的文件列表
-                const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${branchPath}`;
+                // 正确的 API URL，使用 ?ref 指定分支
+                const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${dirPath}?ref=${branch}`;
+
                 try {
-                    const response = await fetch(apiUrl);
-                    if (!response.ok) throw new Error('获取文件列表失败：' + response.status);
+                    // 通过 CORS 代理获取数据
+                    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(apiUrl)}`;
+                    const response = await fetch(proxyUrl);
+                    if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+
                     const files = await response.json();
 
-                    // 过滤出支持的文件（.xlsx, .xls, .json）
-                    const supportedFiles = files.filter(file => 
-                        file.name.match(/\.(xlsx|xls|json)$/i) && file.type === 'file'
+                    // 过滤出 Excel 文件
+                    const excelFiles = files.filter(file =>
+                        file.type === 'file' && /\.(xlsx|xls)$/i.test(file.name)
                     );
 
-                    if (supportedFiles.length === 0) {
-                        alert('云端目录中没有可导入的题库文件（支持 .xlsx, .xls, .json）');
+                    if (excelFiles.length === 0) {
+                        alert('在 words 文件夹中没有找到可导入的 Excel 文件。');
                         return;
                     }
 
-                    // 2. 让用户选择要导入的文件（多选）
-                    const fileNames = supportedFiles.map(f => f.name);
-                    const selectedNames = await this.showFileSelectionDialog(fileNames);
-                    if (!selectedNames || selectedNames.length === 0) return;
+                    // 让用户选择要导入的文件
+                    const selectedFileNames = await this.showFileSelectionDialog(excelFiles.map(f => f.name));
+                    if (!selectedFileNames || selectedFileNames.length === 0) return;
 
-                    // 3. 逐个下载并导入
-                    let successCount = 0;
-                    let errorCount = 0;
-                    for (const selectedName of selectedNames) {
-                        const fileInfo = supportedFiles.find(f => f.name === selectedName);
+                    // 逐个导入
+                    let success = 0, failed = 0;
+                    for (const fileName of selectedFileNames) {
+                        const fileInfo = excelFiles.find(f => f.name === fileName);
                         if (!fileInfo) continue;
 
-                        // 获取文件的 raw 下载地址（GitHub 的 raw 地址）
-                        const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/words/${encodeURIComponent(selectedName)}`;
+                        // 构建 raw 文件下载地址
+                        const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${dirPath}/${encodeURIComponent(fileName)}`;
+                        const downloadUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(rawUrl)}`;
+
                         try {
-                            const fileResp = await fetch(rawUrl);
-                            if (!fileResp.ok) throw new Error(`下载 ${selectedName} 失败`);
+                            const fileResp = await fetch(downloadUrl);
+                            if (!fileResp.ok) throw new Error(`下载 ${fileName} 失败`);
                             const blob = await fileResp.blob();
-                            const fileObj = new File([blob], selectedName, { type: blob.type });
+                            const fileObj = new File([blob], fileName, { type: blob.type });
 
                             // 调用已有的单文件导入方法
                             await this.importSingleLibrary(fileObj);
-                            successCount++;
+                            success++;
                         } catch (err) {
-                            console.error(`导入 ${selectedName} 出错`, err);
-                            errorCount++;
+                            console.error(`导入 ${fileName} 出错`, err);
+                            failed++;
                         }
                     }
-
-                    alert(`云端导入完成：成功 ${successCount} 个，失败 ${errorCount} 个`);
-                    this.updateUI();  // 刷新题库列表
+                    alert(`导入完成：成功 ${success} 个，失败 ${failed} 个。`);
+                    this.updateUI();
                 } catch (err) {
-                    console.error(err);
-                    alert('云端导入失败：' + err.message);
+                    console.error('云端导入失败:', err);
+                    alert(`云端导入失败：${err.message}`);
                 }
             },
 
