@@ -3842,58 +3842,126 @@
                     'https://cors-anywhere.herokuapp.com/'
                 ];
 
-                // 递归获取目录下所有文件（包括子目录）
-                async function fetchDirectoryContents(path, proxyUsed) {
-                    const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}?ref=${branch}`;
-                    const proxyUrl = proxyUsed + encodeURIComponent(apiUrl);
+                // 辅助函数：正确编码路径（分别编码每个段，保留 /）
+                function encodePath(path) {
+                    return path.split('/').map(seg => encodeURIComponent(seg)).join('/');
+                }
 
-                    const response = await fetch(proxyUrl);
-                    if (!response.ok) throw new Error('HTTP ' + response.status);
-                    const items = await response.json();
+                // 辅助函数：尝试直接请求（不经过代理）
+                async function tryDirectFetch(url) {
+                    try {
+                        const resp = await fetch(url);
+                        if (resp.ok) return resp;
+                    } catch (e) {}
+                    return null;
+                }
+
+                // 辅助函数：通过代理请求
+                async function tryProxyFetch(url, proxy) {
+                    try {
+                        const proxyUrl = proxy + encodeURIComponent(url);
+                        const resp = await fetch(proxyUrl);
+                        if (resp.ok) return resp;
+                    } catch (e) {}
+                    return null;
+                }
+
+                // 递归获取目录下所有文件（包括子目录）
+                // 子目录获取失败不会阻塞其他目录
+                async function fetchDirectoryContents(path, proxyUsed) {
+                    const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${encodePath(path)}?ref=${branch}`;
+
+                    let response = null;
+
+                    // 先尝试直接访问 GitHub API
+                    response = await tryDirectFetch(apiUrl);
+
+                    // 直接访问失败，尝试代理
+                    if (!response && proxyUsed) {
+                        response = await tryProxyFetch(apiUrl, proxyUsed);
+                    }
+
+                    if (!response) {
+                        console.warn('无法获取目录内容:', path);
+                        return [];
+                    }
+
+                    let items;
+                    try {
+                        items = await response.json();
+                    } catch (e) {
+                        console.warn('解析目录内容失败:', path, e);
+                        return [];
+                    }
+
+                    // 如果返回的是单个文件对象（不是数组），转为数组处理
+                    if (!Array.isArray(items)) {
+                        if (items.type === 'file') {
+                            items = [items];
+                        } else {
+                            return [];
+                        }
+                    }
 
                     let allFiles = [];
 
                     for (const item of items) {
                         if (item.type === 'file' && /\.(xlsx|xls)$/i.test(item.name)) {
-                            // 记录相对路径，用于显示和下载
                             allFiles.push({
                                 name: item.name,
-                                path: item.path,  // 完整路径，如 words/医学术语学/xxx.xlsx
+                                path: item.path,
                                 download_url: item.download_url
                             });
                         } else if (item.type === 'dir') {
-                            // 递归获取子目录
-                            const subFiles = await fetchDirectoryContents(item.path, proxyUsed);
-                            allFiles = allFiles.concat(subFiles);
+                            // 递归获取子目录，错误不影响其他目录
+                            try {
+                                const subFiles = await fetchDirectoryContents(item.path, proxyUsed);
+                                allFiles = allFiles.concat(subFiles);
+                            } catch (err) {
+                                console.warn('获取子目录失败，跳过:', item.path, err);
+                            }
                         }
                     }
 
                     return allFiles;
                 }
 
+                // 先探测哪个代理可用（同时测试直接访问）
+                let proxyUsed = null;
                 let allFiles = null;
-                let proxyUsed = '';
 
-                // 尝试获取所有文件（递归）
-                for (const proxy of proxies) {
-                    try {
-                        allFiles = await fetchDirectoryContents(dirPath, proxy);
-                        proxyUsed = proxy;
-                        break;
-                    } catch (err) {
-                        console.warn('代理获取列表失败：' + proxy, err);
+                // 首先尝试直接访问 GitHub API（不经过代理）
+                try {
+                    allFiles = await fetchDirectoryContents(dirPath, null);
+                    if (allFiles && allFiles.length > 0) {
+                        console.log('直接访问 GitHub API 成功');
+                    }
+                } catch (err) {
+                    console.log('直接访问 GitHub API 失败，尝试代理');
+                }
+
+                // 直接访问失败或无文件，尝试代理
+                if (!allFiles || allFiles.length === 0) {
+                    for (const proxy of proxies) {
+                        try {
+                            allFiles = await fetchDirectoryContents(dirPath, proxy);
+                            if (allFiles && allFiles.length > 0) {
+                                proxyUsed = proxy;
+                                console.log('代理访问成功:', proxy);
+                                break;
+                            }
+                        } catch (err) {
+                            console.warn('代理获取列表失败：' + proxy, err);
+                        }
                     }
                 }
 
-                if (!allFiles) {
+                if (!allFiles || allFiles.length === 0) {
                     alert('无法获取题库文件列表，可能是网络受限。\n请手动下载 GitHub words 目录中的 Excel 文件，再用"导入新题库"按钮上传。');
                     return;
                 }
 
-                if (allFiles.length === 0) {
-                    alert('在 words 文件夹及其子目录中没有找到 Excel 文件。');
-                    return;
-                }
+                console.log('获取到文件列表:', allFiles.map(f => f.path));
 
                 // 让用户选择文件（带路径显示）
                 const selectedFilePaths = await this.showFileSelectionDialogWithPath(allFiles);
@@ -3904,30 +3972,42 @@
                     const fileInfo = allFiles.find(f => f.path === filePath);
                     if (!fileInfo) continue;
 
-                    // 使用完整路径构建 raw URL
-                    const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${encodeURIComponent(fileInfo.path)}`;
+                    // 正确构建 raw URL（分别编码每个路径段）
+                    const encodedPath = encodePath(fileInfo.path);
+                    const rawUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${encodedPath}`;
 
-                    // 优先尝试直接下载
+                    // 优先尝试直接下载 raw 文件
                     let blob = null;
                     try {
                         const resp = await fetch(rawUrl);
                         if (resp.ok) {
                             blob = await resp.blob();
+                            console.log('直接下载成功:', fileInfo.name);
                         }
-                    } catch (e) { /* 忽略 */ }
+                    } catch (e) { 
+                        console.log('直接下载失败，尝试代理:', fileInfo.name);
+                    }
 
                     // 直接下载失败则走代理
-                    if (!blob) {
+                    if (!blob && proxyUsed) {
                         try {
                             const proxyDownloadUrl = proxyUsed + encodeURIComponent(rawUrl);
                             const resp = await fetch(proxyDownloadUrl);
                             if (!resp.ok) throw new Error('代理下载失败');
                             blob = await resp.blob();
+                            console.log('代理下载成功:', fileInfo.name);
                         } catch (err) {
                             console.error('下载"' + fileInfo.name + '"失败', err);
                             failed++;
                             continue;
                         }
+                    }
+
+                    // 所有方式都失败
+                    if (!blob) {
+                        console.error('无法下载文件:', fileInfo.name);
+                        failed++;
+                        continue;
                     }
 
                     try {
@@ -3942,113 +4022,6 @@
 
                 alert(`导入完成：成功 ${success} 个，失败 ${failed} 个。`);
                 this.updateUI();
-            },
-
-            // 带路径显示的文件选择对话框（支持子目录）
-            showFileSelectionDialogWithPath: function(files) {
-                return new Promise((resolve) => {
-                    const container = document.createElement('div');
-                    container.style.cssText = `
-                        position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-                        background: white; padding: 20px; border-radius: 12px;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.3); z-index: 10000;
-                        max-width: 500px; width: 90%; max-height: 80vh; overflow: auto;
-                    `;
-                    const title = document.createElement('h3');
-                    title.textContent = '选择要导入的云端题库（可多选）';
-                    title.style.marginTop = '0';
-                    container.appendChild(title);
-
-                    // 显示统计信息
-                    const statsDiv = document.createElement('div');
-                    statsDiv.style.cssText = 'margin-bottom: 10px; font-size: 13px; color: #666;';
-                    statsDiv.textContent = `共找到 ${files.length} 个 Excel 文件`;
-                    container.appendChild(statsDiv);
-
-                    // 全选/取消全选按钮
-                    const toolbar = document.createElement('div');
-                    toolbar.style.marginBottom = '10px';
-                    toolbar.innerHTML = `
-                        <button id="select-all-btn" class="button button-primary" style="margin-right:8px;">全选</button>
-                        <button id="deselect-all-btn" class="button button-danger">取消全选</button>
-                    `;
-                    container.appendChild(toolbar);
-
-                    const listDiv = document.createElement('div');
-                    listDiv.style.cssText = 'max-height: 400px; overflow-y: auto; border: 1px solid #e0e0e0; border-radius: 6px; padding: 8px;';
-
-                    files.forEach(file => {
-                        // 提取显示路径：去掉开头的 words/，只保留子目录和文件名
-                        const displayPath = file.path.replace(/^words\//, '');
-
-                        const label = document.createElement('label');
-                        label.style.display = 'block';
-                        label.style.margin = '6px 0';
-                        label.style.padding = '4px';
-                        label.style.borderRadius = '4px';
-                        label.style.cursor = 'pointer';
-
-                        const cb = document.createElement('input');
-                        cb.type = 'checkbox';
-                        cb.value = file.path;  // 使用完整路径作为值
-                        cb.style.marginRight = '8px';
-
-                        // 文件名和路径显示
-                        const nameSpan = document.createElement('span');
-                        nameSpan.style.fontWeight = 'bold';
-                        nameSpan.textContent = file.name;
-
-                        const pathSpan = document.createElement('span');
-                        pathSpan.style.cssText = 'color: #888; font-size: 12px; margin-left: 6px;';
-                        // 显示父目录路径
-                        const parentPath = displayPath.replace(/\/[^\/]+$/, '');
-                        pathSpan.textContent = parentPath ? `(${parentPath})` : '(根目录)';
-
-                        label.appendChild(cb);
-                        label.appendChild(nameSpan);
-                        label.appendChild(pathSpan);
-                        listDiv.appendChild(label);
-                    });
-                    container.appendChild(listDiv);
-
-                    const btnDiv = document.createElement('div');
-                    btnDiv.style.display = 'flex';
-                    btnDiv.style.gap = '10px';
-                    btnDiv.style.marginTop = '20px';
-
-                    const confirmBtn = document.createElement('button');
-                    confirmBtn.textContent = '确认导入';
-                    confirmBtn.className = 'button button-primary';
-                    const cancelBtn = document.createElement('button');
-                    cancelBtn.textContent = '取消';
-                    cancelBtn.className = 'button button-danger';
-                    btnDiv.appendChild(confirmBtn);
-                    btnDiv.appendChild(cancelBtn);
-                    container.appendChild(btnDiv);
-
-                    document.body.appendChild(container);
-
-                    // 全选/取消功能
-                    const checkboxes = listDiv.querySelectorAll('input[type="checkbox"]');
-                    document.getElementById('select-all-btn').onclick = () => {
-                        checkboxes.forEach(cb => cb.checked = true);
-                    };
-                    document.getElementById('deselect-all-btn').onclick = () => {
-                        checkboxes.forEach(cb => cb.checked = false);
-                    };
-
-                    const close = () => container.remove();
-
-                    confirmBtn.onclick = () => {
-                        const selected = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
-                        close();
-                        resolve(selected);
-                    };
-                    cancelBtn.onclick = () => {
-                        close();
-                        resolve([]);
-                    };
-                });
             },
 
             // 保持原有的 processQuestionRow 方法不变
