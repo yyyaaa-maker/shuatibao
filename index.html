@@ -2053,6 +2053,41 @@
 .quick-mode-config .button {
     margin-top: 10px;
 }
+
+    .file-selection-dialog {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 10000;
+    }
+    .dialog-content {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+    }
+    .file-list {
+        margin: 15px 0;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+    .file-item {
+        display: block;
+        margin: 5px 0;
+        cursor: pointer;
+    }
+    .dialog-actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-top: 15px;
+    }
     </style>
 </head>
 <body>
@@ -4022,6 +4057,53 @@
 
                 alert(`导入完成：成功 ${success} 个，失败 ${failed} 个。`);
                 this.updateUI();
+            },
+
+            showFileSelectionDialogWithPath: function(allFiles) {
+                return new Promise((resolve) => {
+                    const dialog = document.createElement('div');
+                    dialog.className = 'file-selection-dialog';
+                    dialog.innerHTML = `
+                        <div class="dialog-content">
+                            <h3>选择要导入的题库文件</h3>
+                            <div class="file-list">
+                                ${allFiles.map((file, index) => `
+                                    <label class="file-item">
+                                        <input type="checkbox" value="${file.path}" checked>
+                                        <span>${file.path}</span>
+                                    </label>
+                                `).join('')}
+                            </div>
+                            <div class="dialog-actions">
+                                <button id="select-all-btn" class="button button-primary">全选</button>
+                                <button id="deselect-all-btn" class="button button-warning">取消全选</button>
+                                <button id="confirm-btn" class="button button-success">确认导入</button>
+                                <button id="cancel-btn" class="button button-danger">取消</button>
+                            </div>
+                        </div>
+                    `;
+                    document.body.appendChild(dialog);
+
+                    dialog.querySelector('#select-all-btn').addEventListener('click', () => {
+                        dialog.querySelectorAll('.file-item input[type="checkbox"]').forEach(cb => cb.checked = true);
+                    });
+
+                    dialog.querySelector('#deselect-all-btn').addEventListener('click', () => {
+                        dialog.querySelectorAll('.file-item input[type="checkbox"]').forEach(cb => cb.checked = false);
+                    });
+
+                    dialog.querySelector('#confirm-btn').addEventListener('click', () => {
+                        const selected = Array.from(dialog.querySelectorAll('.file-item input[type="checkbox"]:checked'))
+                            .map(cb => cb.value);
+                        document.body.removeChild(dialog);
+                        resolve(selected);
+                    });
+
+                    dialog.querySelector('#cancel-btn').addEventListener('click', () => {
+                        document.body.removeChild(dialog);
+                        resolve(null);
+                    });
+                });
             },
 
             // 保持原有的 processQuestionRow 方法不变
