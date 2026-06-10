@@ -4061,44 +4061,22 @@
 
             showFileSelectionDialogWithPath: function(allFiles) {
                 return new Promise((resolve) => {
-                    // 获取本地已有题库名称列表
-                    const localNames = new Set(
-                        (this.data.libraries || []).map(lib => lib.name)
-                    );
-
-                    // 从云端文件路径中提取题库名（去掉目录和扩展名）
-                    function getLibraryName(filePath) {
-                        const fileName = filePath.split('/').pop(); // 取最后一段文件名
-                        return fileName.replace(/\.[^/.]+$/, ''); // 去掉扩展名
-                    }
-
                     const dialog = document.createElement('div');
                     dialog.className = 'file-selection-dialog';
                     dialog.innerHTML = `
                         <div class="dialog-content">
                             <h3>选择要导入的题库文件</h3>
-                            <div style="margin-bottom:8px;font-size:13px;color:#666;">
-                                已有题库自动取消勾选，仅勾选本地缺少的题库
-                            </div>
                             <div class="file-list">
-                                ${allFiles.map((file, index) => {
-                                    const libName = getLibraryName(file.path);
-                                    const exists = localNames.has(libName);
-                                    const checked = !exists;
-                                    const label = exists ? `${file.path}（已有）` : file.path;
-                                    const style = exists ? 'opacity:0.5;' : '';
-                                    return `
-                                        <label class="file-item" style="${style}">
-                                            <input type="checkbox" value="${file.path}" ${checked ? 'checked' : ''}>
-                                            <span>${label}</span>
-                                        </label>
-                                    `;
-                                }).join('')}
+                                ${allFiles.map((file, index) => `
+                                    <label class="file-item">
+                                        <input type="checkbox" value="${file.path}" checked>
+                                        <span>${file.path}</span>
+                                    </label>
+                                `).join('')}
                             </div>
                             <div class="dialog-actions">
                                 <button id="select-all-btn" class="button button-primary">全选</button>
                                 <button id="deselect-all-btn" class="button button-warning">取消全选</button>
-                                <button id="select-missing-btn" class="button button-info">仅选缺少</button>
                                 <button id="confirm-btn" class="button button-success">确认导入</button>
                                 <button id="cancel-btn" class="button button-danger">取消</button>
                             </div>
@@ -4112,15 +4090,6 @@
 
                     dialog.querySelector('#deselect-all-btn').addEventListener('click', () => {
                         dialog.querySelectorAll('.file-item input[type="checkbox"]').forEach(cb => cb.checked = false);
-                    });
-
-                    dialog.querySelector('#select-missing-btn').addEventListener('click', () => {
-                        dialog.querySelectorAll('.file-item').forEach(item => {
-                            const cb = item.querySelector('input[type="checkbox"]');
-                            const span = item.querySelector('span');
-                            // 如果标签包含"已有"则取消勾选，否则勾选
-                            cb.checked = !span.textContent.includes('（已有）');
-                        });
                     });
 
                     dialog.querySelector('#confirm-btn').addEventListener('click', () => {
